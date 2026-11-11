@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  机型 : Xiaomi MIX 4 (codename: odin，型号 2106118C，SM8350)
+  目标 : AviumUI 16.2 (avium-16.2，基线 lineage-23.2 / Android 16)
+  用法 : 由 workflow 自动 cp 到 .repo/local_manifests/；手工构建见 README.md 第 2 节
+  lunch: lineage_odin-bp4a-userdebug
+  注意 : LineageOS 官方没有 odin（在 LineageOS org 内检索无此设备）。
+         下面 device / kernel / vendor 三件套全部来自第三方维护者 Inkypen79，
+         lineage-23.2 分支已核实存在，但非官方维护。
+         该设备树没有 lineage.dependencies，所以 kernel 与 vendor 必须靠本文件显式指定。
+-->
+<manifest>
+
+  <!-- 设备树（第三方） -->
+  <project name="Inkypen79/device_xiaomi_odin"
+           path="device/xiaomi/odin"
+           remote="github" revision="lineage-23.2" />
+
+  <!--
+    内核（第三方）。设备树 BoardConfig.mk 中的约定：
+      TARGET_KERNEL_SOURCE := kernel/xiaomi/odin
+      TARGET_KERNEL_CONFIG := odin_defconfig
+      TARGET_KERNEL_CLANG_VERSION := r574158
+    设备树的 vendorsetup.sh 会在 lunch 时自动把 clang r574158 从 gitlab.com/inkypen
+    拉取到 prebuilts/clang/host/linux-x86/clang-r574158，因此构建机需能访问 gitlab.com。
+  -->
+  <project name="Inkypen79/kernel_xiaomi_odin"
+           path="kernel/xiaomi/odin"
+           remote="github" revision="lineage-23.2" />
+
+  <!-- vendor blobs（第三方） -->
+  <project name="Inkypen79/vendor_xiaomi_odin"
+           path="vendor/xiaomi/odin"
+           remote="github" revision="lineage-23.2" />
+
+  <!-- 设备树额外依赖：BoardConfig 引用 hardware/xiaomi/vintf/xiaomi_framework_compatibility_matrix.xml -->
+  <project name="LineageOS/android_hardware_xiaomi"
+           path="hardware/xiaomi"
+           remote="github" revision="lineage-23.2" />
+
+  <!-- 可选：vendor/xiaomi/miuicamera（device.mk 用 inherit-product-if-exists，缺失不致命） -->
+  <!--
+    GApps（默认随构建生成）：MindTheGapps，Android 16 对应分支 baklava。
+    设备树 lineage_odin.mk 里是 ifeq ($(WITH_GMS), true) 条件 inherit
+    vendor/gapps/arm64/arm64-vendor.mk，故只需提供本仓 + 打开 WITH_GMS，无需改设备树。
+  -->
+  <project name="MindTheGapps/vendor_gapps"
+           path="vendor/gapps"
+           remote="github" revision="baklava" />
+
+</manifest>

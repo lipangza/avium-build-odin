@@ -1,0 +1,171 @@
+name: Build AviumUI (odin)
+
+# 仓库：avium-build-odin —— 只构建 odin（Xiaomi MIX 4，2106118C，SM8350）
+# 源码目录固定：$HOME/android/avium-odin       ccache 固定：$HOME/.ccache-odin
+# 产物：AviumUI-odin-<run_number>（含 vendor_boot.img，odin 是 GKI 机型）
+#
+# 可选：给本仓库配专用 runner 时，把第 38 行改成
+#   runs-on: [self-hosted, odin]
+# 默认不加标签，任何带 self-hosted 标签的机器都能接单。
+#
+# 注意：设备树/内核/vendor 均来自第三方维护者 Inkypen79（LineageOS 官方无 odin）；
+#       lunch 时 device/xiaomi/odin/vendorsetup.sh 会从 gitlab.com/inkypen 拉取
+#       clang r574158，因此 runner 必须能访问 gitlab.com。
+on:
+  workflow_dispatch:
+    inputs:
+      clean_build:
+        description: '删除源码目录后全量重编'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  BRANCH: avium-16.2
+  CCACHE_SIZE: 50G
+  TZ: Asia/Shanghai
+  # 默认开启 GMS：设备树里 vendor/gapps 的 inherit 由 ifeq ($(WITH_GMS), true) 控制
+  WITH_GMS: "true"
+
+# 同一仓库同时只跑一个构建，避免两次运行抢同一个源码目录
+concurrency:
+  group: avium-odin
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: AviumUI-odin
+    runs-on: self-hosted
+    timeout-minutes: 720
+
+    steps:
+      - name: 0. 检出构建仓库
+        uses: actions/checkout@v4
+
+      - name: 1. 环境检查
+        run: |
+          echo "=== 机型: odin / 主机: $(hostname) ==="
+          uname -a; df -h /; free -h; nproc
+          FREE_GB=$(df / --output=avail -BG | tail -1 | tr -d ' G')
+          echo "可用空间: ${FREE_GB}GB"
+          if [ "$FREE_GB" -lt 350 ]; then
+            echo "::error::可用空间 ${FREE_GB}GB < 350GB，odin 源码树需要约 350–400GB"
+            exit 1
+          fi
+
+      - name: 2. 清理源码（可选）
+        if: inputs.clean_build
+        run: rm -rf "$HOME/android/avium-odin"
+
+      - name: 3. 初始化 repo 并注入机型清单
+        run: |
+          set -e
+          SRC_DIR="$HOME/android/avium-odin"
+          mkdir -p "$SRC_DIR"
+          cd "$SRC_DIR"
+          export PATH=$HOME/bin:$PATH
+          repo init -u https://github.com/AviumUI/android_manifests -b "$BRANCH" --git-lfs
+          mkdir -p .repo/local_manifests
+          cp "$GITHUB_WORKSPACE/local_manifests/odin.xml" .repo/local_manifests/
+          ls -l .repo/local_manifests/
+
+      - name: 4. 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf imagemagick \
+            protobuf-compiler python3-protobuf lib32readline-dev \
+            lib32z1-dev libdw-dev libelf-dev lz4 libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 aria2
+
+      - name: 5. 安装 repo 工具
+        run: |
+          mkdir -p $HOME/bin
+          if [ ! -f $HOME/bin/repo ]; then
+            curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > $HOME/bin/repo
+            chmod a+x $HOME/bin/repo
+          fi
+          $HOME/bin/repo --version
+
+      - name: 6. 配置 Git
+        run: |
+          git config --global user.name "minghao680"
+          git config --global user.email "minghao680@users.noreply.github.com"
+          git lfs install
+
+      - name: 7. 配置 ccache
+        run: |
+          export CCACHE_DIR="$HOME/.ccache-odin"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M ${CCACHE_SIZE}
+          ccache -z
+          ccache -s
+
+      - name: 8. 同步源码
+        run: |
+          set -e
+          cd "$HOME/android/avium-odin"
+          export PATH=$HOME/bin:$PATH
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --retry-fetches=3
+
+      - name: 9. 验证目录结构
+        run: |
+          set -e
+          cd "$HOME/android/avium-odin"
+          for d in device/xiaomi/odin kernel/xiaomi/odin vendor/xiaomi/odin vendor/gapps; do
+            if [ -d "$d" ]; then echo "OK  $d"; else echo "MISSING $d"; exit 1; fi
+          done
+          echo "=== 编译前磁盘 ==="; df -h /
+
+      - name: 10. 开始编译
+        run: |
+          set -e
+          cd "$HOME/android/avium-odin"
+          export PATH=$HOME/bin:$PATH
+          export CCACHE_DIR="$HOME/.ccache-odin"
+          echo "开始编译 AviumUI for odin on $(hostname) @ $(date '+%F %T')"
+          source build/envsetup.sh
+          breakfast odin
+          test "$(get_build_var WITH_GMS)" = "true" || { echo "::error::WITH_GMS 未生效，产物将不含 GMS"; exit 1; }
+          brunch odin userdebug 2>&1 | tee build.log
+
+      - name: 11. 收集产物
+        if: success()
+        run: |
+          cd "$HOME/android/avium-odin"
+          PRODUCT_DIR="out/target/product/odin"
+          OUT_DIR="$GITHUB_WORKSPACE/build-output"
+          mkdir -p "$OUT_DIR"
+          cp ${PRODUCT_DIR}/*.zip           "$OUT_DIR"/ 2>/dev/null || true
+          cp ${PRODUCT_DIR}/boot.img        "$OUT_DIR"/ 2>/dev/null || true
+          cp ${PRODUCT_DIR}/dtbo.img        "$OUT_DIR"/ 2>/dev/null || true
+          cp ${PRODUCT_DIR}/vbmeta.img      "$OUT_DIR"/ 2>/dev/null || true
+          cp ${PRODUCT_DIR}/vendor_boot.img "$OUT_DIR"/ 2>/dev/null || true
+          cat > "$OUT_DIR"/build-info.txt <<EOF
+          AviumUI Build Info
+          ==================
+          Device: odin
+          Branch: ${BRANCH}
+          Build Type: userdebug
+          Build Date: $(date '+%F %T')
+          Runner: $(hostname)
+          EOF
+          ls -lh "$OUT_DIR"
+
+      - name: 12. 上传产物
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AviumUI-odin-${{ github.run_number }}
+          path: build-output/
+          retention-days: 7
+          compression-level: 1
+
+      - name: 13. 编译统计
+        if: always()
+        run: |
+          cd "$HOME/android/avium-odin" 2>/dev/null || exit 0
+          [ -f build.log ] && echo "日志大小: $(du -h build.log | cut -f1)" || true
+          CCACHE_DIR="$HOME/.ccache-odin" ccache -s | grep -E "cache hit|Cache size" || true
